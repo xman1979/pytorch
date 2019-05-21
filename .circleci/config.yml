@@ -130,10 +130,22 @@ install_doc_push_script: &install_doc_push_script
     EOL
     chmod +x /home/circleci/project/doc_push_script.sh
 
-# `setup_ci_environment` has to be run **after** the ``checkout`` step because
-# it writes into the checkout directory and otherwise git will complain
+# `should_run_job` has to be run **after** the ``checkout`` step because
+# it uses scripts and Git the checkout directory and otherwise git will complain
 # that
 #   Directory (/home/circleci/project) you are trying to checkout to is not empty and not git repository
+should_run_job: &should_run_job
+  name: Should Run Job After checkout
+  no_output_timeout: "2m"
+  command: |
+    set -exu
+    # Don't assume that the CWD is right.
+    # Note: if a tilde is in a variable, as it is the case in CIRCLE_WORKING_DIRECTORY
+    # you won't get expansion to HOME.  So do it manually
+    cd "${CIRCLE_WORKING_DIRECTORY/#\~/$HOME}"
+    .circleci/scripts/should_run_job.sh
+
+# Also needs to be run after checkout
 setup_ci_environment: &setup_ci_environment
   name: Set Up CI Environment After Checkout
   no_output_timeout: "1h"
@@ -172,9 +184,11 @@ pytorch_linux_build_defaults: &pytorch_linux_build_defaults
   steps:
   - attach_workspace:
       at: ~/workspace
+  - checkout
+  - run:
+      <<: *should_run_job
   - run:
       <<: *setup_linux_system_environment
-  - checkout
   - run:
       <<: *setup_ci_environment
   - run:
@@ -220,9 +234,11 @@ pytorch_linux_test_defaults: &pytorch_linux_test_defaults
   steps:
   - attach_workspace:
       at: ~/workspace
+  - checkout
+  - run:
+      <<: *should_run_job
   - run:
       <<: *setup_linux_system_environment
-  - checkout
   - run:
       <<: *setup_ci_environment
   - run:
@@ -258,9 +274,11 @@ caffe2_linux_build_defaults: &caffe2_linux_build_defaults
   steps:
   - attach_workspace:
       at: ~/workspace
+  - checkout
+  - run:
+      <<: *should_run_job
   - run:
       <<: *setup_linux_system_environment
-  - checkout
   - run:
       <<: *setup_ci_environment
   - run:
@@ -319,6 +337,9 @@ caffe2_linux_test_defaults: &caffe2_linux_test_defaults
   steps:
   - attach_workspace:
       at: ~/workspace
+  - checkout
+  - run:
+      <<: *should_run_job
   - run:
       <<: *setup_linux_system_environment
   - run:
@@ -387,6 +408,8 @@ caffe2_macos_build_defaults: &caffe2_macos_build_defaults
     xcode: "9.0"
   steps:
     - checkout
+    - run:
+        <<: *should_run_job
     - run:
         <<: *macos_brew_update
     - run:
@@ -540,6 +563,9 @@ binary_linux_build: &binary_linux_build
       at: ~/workspace
   - run:
       <<: *binary_checkout
+  - checkout
+  - run:
+      <<: *should_run_job
   - run:
       <<: *binary_populate_env
   - run:
@@ -588,8 +614,9 @@ binary_linux_test: &binary_linux_test
   steps:
   - attach_workspace:
       at: ~/workspace
-  - attach_workspace:
-      at: /home/circleci/project
+  - checkout
+  - run:
+      <<: *should_run_job
   - run:
       <<: *setup_linux_system_environment
   - run:
@@ -611,6 +638,9 @@ binary_linux_upload: &binary_linux_upload
   steps:
   - attach_workspace:
       at: ~/workspace
+  - checkout
+  - run:
+      <<: *should_run_job
   - run:
       <<: *setup_linux_system_environment
   - run:
@@ -639,6 +669,9 @@ binary_mac_build: &binary_mac_build
       at: ~/workspace
   - run:
       <<: *binary_checkout
+  - checkout
+  - run:
+      <<: *should_run_job
   - run:
       <<: *binary_populate_env
   - run:
@@ -674,6 +707,9 @@ binary_mac_upload: &binary_mac_upload
   steps:
   - attach_workspace:
       at: ~/workspace
+  - checkout
+  - run:
+      <<: *should_run_job
   - run:
       <<: *binary_checkout
   - run:
@@ -1027,6 +1063,10 @@ jobs:
     steps:
     - attach_workspace:
         at: ~/workspace
+    # This checkout solely exists to let should_run_job to work
+    - checkout
+    - run:
+        <<: *should_run_job
     - run:
         <<: *setup_linux_system_environment
     - run:
@@ -1062,6 +1102,10 @@ jobs:
     steps:
     - attach_workspace:
         at: ~/workspace
+    # This checkout solely exists to let should_run_job to work
+    - checkout
+    - run:
+        <<: *should_run_job
     - run:
         <<: *setup_linux_system_environment
     - run:
@@ -1104,16 +1148,18 @@ jobs:
           docker push ${DEBUG_COMMIT_DOCKER_IMAGE}
 
   pytorch_macos_10_13_py3_build:
+    environment:
+      BUILD_ENVIRONMENT: pytorch-macos-10.13-py3-build
     macos:
       xcode: "9.0"
     steps:
       - checkout
       - run:
+          <<: *should_run_job
+      - run:
           <<: *macos_brew_update
       - run:
           name: Build
-          environment:
-            BUILD_ENVIRONMENT: pytorch-macos-10.13-py3-build
           no_output_timeout: "1h"
           command: |
             set -e
@@ -1134,8 +1180,6 @@ jobs:
             chmod a+x .jenkins/pytorch/macos-build.sh
             unbuffer .jenkins/pytorch/macos-build.sh 2>&1 | ts
 
-            mkdir -p /Users/distiller/pytorch-ci-env/workspace
-
             # copy with -a to preserve relative structure (e.g., symlinks), and be recursive
             cp -a /Users/distiller/project/. /Users/distiller/pytorch-ci-env/workspace
       - persist_to_workspace:
@@ -1144,6 +1188,8 @@ jobs:
             - "*"
 
   pytorch_macos_10_13_py3_test:
+    environment:
+      BUILD_ENVIRONMENT: pytorch-macos-10.13-py3-test
     macos:
       xcode: "9.0"
     steps:
@@ -1155,11 +1201,18 @@ jobs:
       - attach_workspace:
           at: /Users/distiller/pytorch-ci-env
       - run:
+          name: Should Run Job
+          command: |
+            if ! [ -e /Users/distiller/pytorch-ci-env/workspace ]; then
+              # The workspace doesn't exist; we must have abborted
+              # previously
+              circleci step halt
+              exit 0
+            fi
+      - run:
           <<: *macos_brew_update
       - run:
           name: Test
-          environment:
-            BUILD_ENVIRONMENT: pytorch-macos-10.13-py3-test
           no_output_timeout: "1h"
           command: |
             set -e
@@ -1168,20 +1221,24 @@ jobs:
             # copy with -a to preserve relative structure (e.g., symlinks), and be recursive
             cp -a /Users/distiller/pytorch-ci-env/workspace/. /Users/distiller/project
 
+            source .circleci/scripts/should_run_job.sh
+
             chmod a+x .jenkins/pytorch/macos-test.sh
             unbuffer .jenkins/pytorch/macos-test.sh 2>&1 | ts
 
   pytorch_macos_10_13_cuda9_2_cudnn7_py3_build:
+    environment:
+      BUILD_ENVIRONMENT: pytorch-macos-10.13-cuda9.2-cudnn7-py3-build
     macos:
       xcode: "9.0"
     steps:
       - checkout
       - run:
+          <<: *should_run_job
+      - run:
           <<: *macos_brew_update
       - run:
           name: Build
-          environment:
-            BUILD_ENVIRONMENT: pytorch-macos-10.13-cuda9.2-cudnn7-py3-build
           no_output_timeout: "1h"
           command: |
             set -e
