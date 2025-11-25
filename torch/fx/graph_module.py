@@ -865,9 +865,19 @@ class {module_name}(torch.nn.Module):
             self._in_spec = self._graph._codegen.pytree_info.in_spec
             self._out_spec = self._graph._codegen.pytree_info.out_spec
 
+        # dump the verbose version of the generated code because
+        # 1) it's easier to read for debugging
+        # 2) it contains stack trace, so when we hash the code we can
+        #    distinguish code that looks the same but from different user code locations
+        dump_verbose_graph = (
+            fx_experimental_config.dump_code_to_file
+            or fx_experimental_config.enrich_profiler_metadata
+        )
+
         python_code = self._graph.python_code(
             root_module="self",
             record_func=fx_experimental_config.enrich_profiler_metadata,
+            verbose=dump_verbose_graph,
         )
         self._code = python_code.src
         self._lineno_map = python_code._lineno_map
@@ -876,48 +886,73 @@ class {module_name}(torch.nn.Module):
         cls = type(self)
         co_fields = self._graph._co_fields if hasattr(self._graph, "_co_fields") else {}
 
-        if fx_experimental_config.enrich_profiler_metadata:
-            # Generate metadata and register for profiler augmentation
-            node_metadata: dict[int, dict[str, Any]] = {}
-            for i, node in enumerate(self._graph.nodes):
-                node_metadata[i] = {
-                    "name": node.name,
-                    "op": node.op,
-                    "target": str(node.target),
-                    "stack_trace": node.meta.get("stack_trace", None),
-                }
-
+        # Dump code to file and run from file if config is enabled
+        if dump_verbose_graph:
             # Generate a content-addressed filename based on hash of code and metadata
             # This ensures the same code+metadata always generates the same filename
-            hash_value = _metadata_hash(self._code, node_metadata)
+            hash_value = _metadata_hash(self._code, {})
             file_stem = f"{FX_GRAPH_MODULE_FILE_PREFIX}_{hash_value}"
             filename = f"{file_stem}.py"
 
-            # Only include co_filename to use it directly as the cache key
-            co_fields = {
-                "co_filename": filename,
-            }
+            if fx_experimental_config.enrich_profiler_metadata:
+                node_metadata: dict[int, dict[str, Any]] = {}
+                for i, node in enumerate(self._graph.nodes):
+                    node_metadata[i] = {
+                        "name": node.name,
+                        "op": node.op,
+                        "target": str(node.target),
+                        "stack_trace": node.meta.get("stack_trace", None),
+                    }
 
-            # Store metadata in global in-memory registry
-            metadata = {
-                "lineno_map": python_code._lineno_map,
-                "prologue_start": python_code._prologue_start,
-                "node_metadata": node_metadata,
-            }
+                # Store metadata in global in-memory registry
+                metadata = {
+                    "lineno_map": python_code._lineno_map,
+                    "prologue_start": python_code._prologue_start,
+                    "node_metadata": node_metadata,
+                }
 
-            # Register metadata in the global registry
-            from torch.fx.traceback import _register_fx_metadata
+                # Register metadata in the global registry
+                from torch.fx.traceback import _register_fx_metadata
 
-            _register_fx_metadata(filename, metadata)
+                _register_fx_metadata(filename, metadata)
 
-            # Replace the placeholder in generated code with actual filename
-            # The double hash ## convention is used by post-processing to find the fx markers
-            self._code = self._code.replace(
-                "torch._C._profiler._RecordFunctionFast('## ENTER_GRAPH_PLACEHOLDER_KEY ##')",
-                f"torch._C._profiler._RecordFunctionFast('## {filename} ##')",
+                # Replace the placeholder in generated code with actual filename
+                # The double hash ## convention is used by post-processing to find the fx markers
+                self._code = self._code.replace(
+                    "torch._C._profiler._RecordFunctionFast('## ENTER_GRAPH_PLACEHOLDER_KEY ##')",
+                    f"torch._C._profiler._RecordFunctionFast('## {filename} ##')",
+                )
+
+            # Read the code back from file in case user modified the file, i.e. breakpoint
+            try:
+                from torch._inductor.codecache import write as codecache_write
+
+                key, file_path = codecache_write(
+                    self._code,
+                    extension="py",
+                    key=filename[0:-3],  # remove .py
+                )
+
+                with open(file_path, encoding="utf-8") as f:
+                    code_from_file = f.read()
+
+                # Use the file path in co_fields so the compiled code references the real file
+                co_fields = {"co_filename": file_path}
+            except Exception as e:
+                co_fields = {"co_filename": filename}
+                code_from_file = self._code
+
+                warnings.warn(
+                    f"Failed to read or write FX generated code file: {e}. "
+                    "You will not be able to open the file or set breakpoints in generated code. "
+                    "Set torch.fx.experimental._config.dump_code_to_file=False to disable writing codegen'd FX code to file. "
+                )
+
+            cls.forward = _forward_from_src(
+                code_from_file, python_code.globals, co_fields
             )
-
-        cls.forward = _forward_from_src(self._code, python_code.globals, co_fields)
+        else:
+            cls.forward = _forward_from_src(self._code, python_code.globals, co_fields)
 
         # Determine whether this class explicitly defines a __call__ implementation
         # to wrap. If it does, save it in order to have wrapped_call invoke it.

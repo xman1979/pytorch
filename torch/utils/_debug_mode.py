@@ -38,12 +38,14 @@ import inspect
 import logging
 import os
 import traceback
+import warnings
 import weakref
 from collections.abc import Callable
 from typing import Any, TYPE_CHECKING
 
 import torch
 from torch._subclasses.fake_tensor import FakeTensor, FakeTensorMode
+from torch.fx.experimental import _config as fx_experimental_config
 from torch.fx.graph import _parse_stack_trace
 from torch.utils._dtype_abbrs import dtype_abbrs
 from torch.utils._python_dispatch import (
@@ -896,6 +898,17 @@ class DebugMode(TorchDispatchMode):
                 True, check_nan=False
             )
             self.anomaly_for_traces.__enter__()
+
+        if self.record_stack_trace and not fx_experimental_config.dump_code_to_file:
+            # DebugMode cannot reliably turn on this flag for users because the flag needs to be turned on
+            # at compile time, but DebugMode may only wrap around the runtime call.
+            warnings.warn(
+                "If you're using DebugMode on compiled code such as aot_eager (i.e. not eager), you should consider "
+                "turn on torch.fx.experimental._config.dump_code_to_file=True at compiled time to dump "
+                "the FX codegen'd code for the compiled region. "
+                "This will help you to look at the generated code."
+            )
+
         return self
 
     # pyrefly: ignore [bad-override]
