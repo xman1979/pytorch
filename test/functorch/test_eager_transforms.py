@@ -60,7 +60,7 @@ from torch.testing._internal.common_device_type import (
     dtypes,
     instantiate_device_type_tests,
     onlyCPU,
-    onlyCUDA,
+    onlyOn,
 )
 from torch.testing._internal.common_dtype import get_all_fp_dtypes
 from torch.testing._internal.common_utils import (
@@ -2973,7 +2973,7 @@ class TestLinearize(TestCase):
         self.assertEqual(actual_output, expected_output)
         self.assertEqual(actual_jvp, expected_jvp)
 
-    @onlyCUDA
+    @onlyOn(["cuda", "xpu"])
     def test_linearize_errors(self):
         dtype = torch.float
         device = torch.device("cpu")
@@ -3003,7 +3003,7 @@ class TestLinearize(TestCase):
         with self.assertRaisesRegex(
             RuntimeError, "in flattened pytree doesn't match the device"
         ):
-            jvp_fn(x_t.to(torch.device("cuda")))
+            jvp_fn(x_t.to(torch.device(device)))
 
 
 # The tests here follow the cases in [Forward Grad View/inplace]
@@ -5333,76 +5333,87 @@ class TestGradTrackingTensorToList(TestCase):
         self.assertEqual(result, [2.0 + 4.0j, 6.0 + 8.0j])
 
 
-only_for = ("cpu", "cuda")
+only_for = ("cpu", "cuda", "xpu")
 instantiate_device_type_tests(
-    TestGradTransform,
-    globals(),
-    only_for=only_for,
+    TestGradTransform, globals(), only_for=only_for, allow_xpu=True
 )
 instantiate_device_type_tests(
     TestVmapOfGrad,
     globals(),
     only_for=only_for,
+    allow_xpu=True,
 )
 instantiate_device_type_tests(
     TestJac,
     globals(),
     only_for=only_for,
+    allow_xpu=True,
 )
 instantiate_device_type_tests(
     TestJvp,
     globals(),
     only_for=only_for,
+    allow_xpu=True,
 )
 instantiate_device_type_tests(
     TestLinearize,
     globals(),
     only_for=only_for,
+    allow_xpu=True,
 )
 instantiate_device_type_tests(
     TestVmapJvpInplaceView,
     globals(),
     only_for=only_for,
+    allow_xpu=True,
 )
 instantiate_device_type_tests(
     TestHessian,
     globals(),
     only_for=only_for,
+    allow_xpu=True,
 )
 instantiate_device_type_tests(
     TestComposability,
     globals(),
     only_for=only_for,
+    allow_xpu=True,
 )
 instantiate_device_type_tests(
     TestExamplesCorrectness,
     globals(),
     only_for=only_for,
+    allow_xpu=True,
 )
 instantiate_device_type_tests(
     TestHigherOrderOperatorInteraction,
     globals(),
     only_for=only_for,
+    allow_xpu=True,
 )
 instantiate_device_type_tests(
     TestFunctionalize,
     globals(),
     only_for=only_for,
+    allow_xpu=True,
 )
 instantiate_device_type_tests(
     TestAutogradFunction,
     globals(),
     only_for=only_for,
+    allow_xpu=True,
 )
 instantiate_device_type_tests(
     TestAutogradFunctionVmapAPI,
     globals(),
     only_for=only_for,
+    allow_xpu=True,
 )
 instantiate_device_type_tests(
     TestHelpers,
     globals(),
     only_for=only_for,
+    allow_xpu=True,
 )
 instantiate_parametrized_tests(
     TestMakeFunctional,
@@ -5411,9 +5422,10 @@ instantiate_device_type_tests(
     TestCompileTransforms,
     globals(),
     only_for=only_for,
+    allow_xpu=True,
 )
 instantiate_device_type_tests(
-    TestGradTrackingTensorToList, globals(), only_for=only_for
+    TestGradTrackingTensorToList, globals(), only_for=only_for, allow_xpu=True
 )
 
 if __name__ == "__main__":
