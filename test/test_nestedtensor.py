@@ -38,6 +38,7 @@ from torch.testing._internal.common_device_type import (
     instantiate_device_type_tests,
     onlyCPU,
     onlyCUDA,
+    onlyOn,
     ops,
     PYTORCH_CUDA_MEMCHECK,
     skipCPUIf,
@@ -1382,7 +1383,7 @@ class TestNestedTensorDeviceType(NestedTensorTestCase):
         nt = torch.nested.nested_tensor([a, b], layout=torch.jagged)
 
         # Guard CUDA tensors
-        if "cuda" in device:
+        if device.split(":")[0] in ["cuda", "xpu"]:
             result = nt.share_memory_()
             self.assertIs(result, nt)
             return
@@ -1745,7 +1746,7 @@ class TestNestedTensorDeviceType(NestedTensorTestCase):
         out = nt1 - nt2
         self.assertEqual(ref, out)
 
-    @onlyCUDA
+    @onlyOn(["cuda", "xpu"])
     @dtypes(torch.float, torch.float16)
     @torch.inference_mode()
     @parametrize("embedding_dim", [8, 128, 256, 384])
@@ -2249,7 +2250,7 @@ class TestNestedTensorDeviceType(NestedTensorTestCase):
         else:
             self.assertEqual(actual, expect)
 
-    @onlyCUDA
+    @onlyOn(["cuda", "xpu"])
     @dtypes(torch.float, torch.double, torch.float16, torch.bfloat16)
     @tf32_on_and_off(0.005)
     def test_bmm_cuda(self, device, dtype):
@@ -4053,7 +4054,7 @@ class TestNestedTensorSubclass(NestedTensorTestCase):
             grad_test_func, inputs=(a, b, c, weight, bias), check_batched_grad=False
         )
 
-    @onlyCUDA
+    @onlyOn(["cuda", "xpu"])
     @dtypes(torch.float32)
     @serialTest()
     def test_linear_backward_memory_usage(self, device, dtype):
@@ -4061,7 +4062,8 @@ class TestNestedTensorSubclass(NestedTensorTestCase):
         # for higher dim input sizes.
         # See https://github.com/pytorch/pytorch/issues/141112
         B, D, max_seq_len = 64, 512, 100
-        torch._C._cuda_clearCublasWorkspaces()
+        if device == "cuda":
+            torch._C._cuda_clearCublasWorkspaces()
         m = torch.nn.Linear(D, D, device=device)
         nt = torch.nested.as_nested_tensor(
             [
@@ -4075,7 +4077,8 @@ class TestNestedTensorSubclass(NestedTensorTestCase):
         # (B, j1, D) -> (B, j1, 1, D) for a higher dim input size
         nt = nt.unsqueeze(-2)
         # linear_backward() should not explode the max memory usage
-        torch.cuda.reset_max_memory_allocated()
+        if device == "cuda":
+            torch.cuda.reset_max_memory_allocated()
         m(nt).sum().backward()
         # expect under a GB for max memory allocated
         max_after_gb = torch.cuda.max_memory_allocated(0) // (1024**3)
@@ -5525,7 +5528,7 @@ class TestNestedTensorSubclass(NestedTensorTestCase):
     @unittest.skipIf(
         PYTORCH_CUDA_MEMCHECK, "is_pinned uses failure to detect pointer property"
     )
-    @onlyCUDA
+    @onlyOn(["cuda", "xpu"])
     def test_pin_memory(self, device):
         nt_contiguous, nt_noncontiguous = random_nt_noncontiguous_pair((2, 3, 6, 7))
         for nt in [nt_contiguous, nt_noncontiguous]:
@@ -5696,7 +5699,7 @@ class TestNestedTensorSubclass(NestedTensorTestCase):
     @unittest.skipIf(
         PYTORCH_CUDA_MEMCHECK, "is_pinned uses failure to detect pointer property"
     )
-    @onlyCUDA
+    @onlyOn(["cuda", "xpu"])
     def test_jagged_layout_construction_with_pinned_memory(self, device):
         for tensor_list in self._get_example_tensor_lists():
             nt = torch.nested.nested_tensor(
@@ -6105,7 +6108,7 @@ class TestNestedTensorSubclass(NestedTensorTestCase):
             )
 
     @dtypes(torch.double, torch.half)
-    @onlyCUDA
+    @onlyOn(["cuda", "xpu"])
     def test_device_dtype_transfer_updates_offsets(self, device, dtype):
         for tensor_list in self._get_example_tensor_lists():
             orig_device = torch.device("cpu")
@@ -7007,7 +7010,7 @@ torch.cuda.synchronize()
     # Guarding with sqrt() doesn't work on ROCm?
     @xfailIfWindows
     @skipCUDAIfRocm
-    @onlyCUDA
+    @onlyOn(["cuda", "xpu"])
     @dtypes(
         *(
             [torch.float16, torch.bfloat16, torch.float32]
@@ -7133,7 +7136,7 @@ torch.cuda.synchronize()
         output_dense.sum().backward()
         torch._dynamo.disable(self.assertEqual)(query.grad, query_dense.grad)
 
-    @onlyCUDA
+    @onlyOn(["cuda", "xpu"])
     @unittest.skipIf(
         not PLATFORM_SUPPORTS_FUSED_ATTENTION,
         "Platform doesn't support flash or mem-efficient attention",
@@ -7195,7 +7198,7 @@ torch.cuda.synchronize()
     @skipCUDAIf(not SM70OrLater, "GPU capability is < SM70")
     # mha_varlen_fwd not supported on ROCm
     @skipCUDAIfRocm
-    @onlyCUDA
+    @onlyOn(["cuda", "xpu"])
     @dtypes(
         *(
             [torch.float16, torch.bfloat16, torch.float32]
@@ -7226,7 +7229,7 @@ torch.cuda.synchronize()
     )
     @skipCUDAIf(not SM70OrLater, "GPU capability is < SM70")
     @skipCUDAIfRocm
-    @onlyCUDA
+    @onlyOn(["cuda", "xpu"])
     @skipIfTorchDynamo()
     def test_sdpa_autocast(self, device):
         def fn_nt(values32, values16, offsets):
@@ -7309,7 +7312,7 @@ torch.cuda.synchronize()
     )
     @skipCUDAIf(not SM70OrLater, "GPU capability is < SM70")
     @skipCUDAIfRocm
-    @onlyCUDA
+    @onlyOn(["cuda", "xpu"])
     @skipIfTorchDynamo()
     def test_sdpa_flop_counter(self, device):
         from torch.utils.flop_counter import FlopCounterMode
@@ -7553,7 +7556,7 @@ torch.cuda.synchronize()
         self.assertIsNone(nt.grad)
         self.assertIsNone(nt._values.grad_fn)
 
-    @onlyCUDA
+    @onlyOn(["cuda", "xpu"])
     @dtypes(torch.float64, torch.float32, torch.half)
     @parametrize(
         "contiguity",
@@ -9097,10 +9100,10 @@ class TestNestedInt(torch.testing._internal.common_utils.TestCase):
 
 
 instantiate_parametrized_tests(TestNestedTensor)
-instantiate_device_type_tests(TestNestedTensorDeviceType, globals())
-instantiate_device_type_tests(TestNestedTensorAutograd, globals())
-instantiate_device_type_tests(TestNestedTensorSubclass, globals())
-instantiate_device_type_tests(TestNestedTensorOpInfo, globals())
+instantiate_device_type_tests(TestNestedTensorDeviceType, globals(), allow_xpu=True)
+instantiate_device_type_tests(TestNestedTensorAutograd, globals(), allow_xpu=True)
+instantiate_device_type_tests(TestNestedTensorSubclass, globals(), allow_xpu=True)
+instantiate_device_type_tests(TestNestedTensorOpInfo, globals(), allow_xpu=True)
 
 if __name__ == "__main__":
     run_tests()
