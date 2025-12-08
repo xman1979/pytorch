@@ -146,6 +146,8 @@ static bool isGloballyDisabledAddmmCudaLt(const at::Device& device) {
 
 /*
  * Check whether for the given input we want to enable the Lt interface
+ * NOTE: cuBLAS dispatches to Lt internally, so we can retire this function.
+ * TODO: retire this function
  */
 static bool isInputCompliesAddmmCudaLt(
     Tensor& result,
