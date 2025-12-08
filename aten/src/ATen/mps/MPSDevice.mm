@@ -53,6 +53,36 @@ MPSDevice::MPSDevice() : _mtl_device(nil) {
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(_mtl_device);
 }
 
+SoCGen MPSDevice::getSoCGen() const {
+  static const SoCGen gen = []() {
+    size_t size = 0;
+    sysctlbyname("machdep.cpu.brand_string", nullptr, &size, nullptr, 0);
+
+    auto buffer = std::make_unique<char[]>(size);
+    sysctlbyname("machdep.cpu.brand_string", buffer.get(), &size, nullptr, 0);
+
+    std::string brandString(buffer.get());
+
+    static const std::unordered_map<std::string, SoCGen> chipMap = {
+        {"M1", SoCGen::M1},
+        {"M2", SoCGen::M2},
+        {"M3", SoCGen::M3},
+        {"M4", SoCGen::M4},
+        {"M5", SoCGen::M5},
+    };
+
+    for (const auto& [name, chipEnum] : chipMap) {
+      if (brandString.find(name) != std::string::npos) {
+        return chipEnum;
+      }
+    }
+
+    return SoCGen::Unknown;
+  }();
+
+  return gen;
+}
+
 bool MPSDevice::isMacOS13Plus(MacOSVersion version) const {
   auto is_os_version_at_least = [](int major, int minor) {
     @autoreleasepool {
@@ -116,6 +146,10 @@ bool is_available() {
 
 bool is_macos_13_or_newer(MacOSVersion version) {
   return MPSDevice::getInstance()->isMacOS13Plus(version);
+}
+
+SoCGen get_SoC_gen() {
+  return MPSDevice::getInstance()->getSoCGen();
 }
 
 } // namespace at::mps

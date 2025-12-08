@@ -5,6 +5,7 @@
 #include <c10/core/Allocator.h>
 #include <c10/macros/Macros.h>
 #include <c10/util/Exception.h>
+#include <sys/sysctl.h>
 
 #ifdef __OBJC__
 #include <Foundation/Foundation.h>
@@ -23,6 +24,8 @@ enum class MacOSVersion : uint32_t {
   MACOS_VER_15_1_PLUS,
   MACOS_VER_15_2_PLUS,
 };
+
+enum class SoCGen : uint32_t { M1 = 0, M2, M3, M4, M5, Unknown };
 
 //-----------------------------------------------------------------
 //  MPSDevice
@@ -55,6 +58,8 @@ class TORCH_API MPSDevice {
    */
   bool isMacOS13Plus(MacOSVersion version) const;
 
+  SoCGen getSoCGen() const;
+
   /**
    * Returns device name
    */
@@ -76,6 +81,7 @@ class TORCH_API MPSDevice {
 
 TORCH_API bool is_available();
 TORCH_API bool is_macos_13_or_newer(MacOSVersion version);
+TORCH_API SoCGen get_SoC_gen();
 TORCH_API at::Allocator* GetMPSAllocator(bool useSharedAllocator = false);
 
 inline Device getDeviceFromPtr(void* ptr) {

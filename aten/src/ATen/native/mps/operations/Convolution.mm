@@ -112,10 +112,12 @@ static Tensor _mps_convolution_impl(const Tensor& input_t,
   constexpr auto kChannelsLast = MemoryFormat::ChannelsLast;
   constexpr auto kContiguous = MemoryFormat::Contiguous;
   const bool is_macos_15_plus = is_macos_13_or_newer(MacOSVersion::MACOS_VER_15_0_PLUS);
+  const bool is_m5_device = get_SoC_gen() == SoCGen::M5;
 
   const bool is3DConv = input_t.dim() == 5;
   const auto memory_format = input_t.suggest_memory_format();
-  const auto input_suggested_layout = memory_format == kChannelsLast && is_macos_15_plus ? kChannelsLast : kContiguous;
+  const auto input_suggested_layout =
+      memory_format == kChannelsLast && is_macos_15_plus && !is_m5_device ? kChannelsLast : kContiguous;
   const bool is_channels_last = mps_conv_use_channels_last(input_t, weight_t) && !is3DConv;
   const bool bias_defined = bias_opt ? bias_opt->defined() : false;
 
