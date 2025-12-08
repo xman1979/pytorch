@@ -1400,6 +1400,7 @@ class LocalTensorMode(TorchDispatchMode):
         self._old_get_rank = DeviceMesh.get_rank  # type: ignore[assignment]
         self._old_get_local_rank = DeviceMesh.get_local_rank  # type: ignore[assignment]
         DeviceMesh.get_coordinate = _LocalDeviceMesh.get_coordinate  # type: ignore[method-assign]
+        DeviceMesh.sym_get_coordinate = _LocalDeviceMesh.sym_get_coordinate  # type: ignore[method-assign]
         DeviceMesh.get_rank = _LocalDeviceMesh.get_rank  # type: ignore[method-assign]
         DeviceMesh.get_local_rank = _LocalDeviceMesh.get_local_rank  # type: ignore[method-assign]
 
@@ -1531,6 +1532,12 @@ class _LocalDeviceMesh:
         # their meshes formed from root mesh and selecting the same dimensions
         # as the current mesh.
         return out  # type: ignore[return-value]
+
+    @staticmethod
+    def sym_get_coordinate(self: DeviceMesh, index: int) -> int:
+        my_coordinate = self.get_coordinate()
+        assert my_coordinate is not None
+        return my_coordinate[index]
 
     @staticmethod
     def get_rank(self) -> int | SymInt:
