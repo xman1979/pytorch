@@ -13421,7 +13421,7 @@ graph():
             def forward(self, x, f):
                 return x + f.int_1 + f.int_2
 
-        register_constant(MyInput)
+        torch._library.opaque_object.register_opaque_type(MyInput, value_type=True)
         ep = export(Foo(), (torch.randn(2, 2), MyInput(4, 4)), strict=False)
 
         inp = torch.ones(2, 2)
