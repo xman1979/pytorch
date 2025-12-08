@@ -9,6 +9,9 @@ from datetime import timedelta
 import torch
 
 
+RankType = typing.TypeVar("RankType", int, int | torch.SymInt)
+
+
 log = logging.getLogger(__name__)
 
 
