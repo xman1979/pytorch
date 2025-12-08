@@ -46,6 +46,7 @@ from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 from .. import config, graph_break_hints, variables
 from .._trace_wrapped_higher_order_op import trace_wrapped
 from ..exc import (
+    TorchRuntimeError,
     unimplemented,
     UnknownPropertiesDuringBackwardTrace,
     UserError,
@@ -1008,13 +1009,88 @@ class TensorVariable(VariableTracker):
         out = tolist(tensor, self.as_proxy())
         return VariableTracker.build(tx, out)
 
-    def method_backward(self, *args, **kwargs):
-        unimplemented(
-            gb_type="Unsupported Tensor.backward() call",
-            context=f"call_method {self} backward {args} {kwargs}",
-            explanation="Dynamo currently does not support tracing `Tensor.backward()`.",
-            hints=[*graph_break_hints.FUNDAMENTAL],
+    def method_backward(
+        self, gradient=None, retain_graph=None, create_graph=None, inputs=None
+    ):
+        if not config.trace_autograd_ops:
+            unimplemented(
+                gb_type="Unsupported Tensor.backward() call",
+                context=f"call_method {self} backward {gradient} {retain_graph} {create_graph} {inputs}",
+                explanation="Dynamo currently does not support tracing `Tensor.backward()`.",
+                hints=[*graph_break_hints.FUNDAMENTAL],
+            )
+
+        # Match eager error for tensors that don't require grad
+        if not self.requires_grad and not self.has_grad_fn:
+            raise TorchRuntimeError(
+                "element 0 of tensors does not require grad and does not have a grad_fn"
+            )
+
+        from ..symbolic_convert import InstructionTranslator
+
+        tx = InstructionTranslator.current_tx()
+
+        # If inputs is not provided, find all graph inputs that require grad
+        if inputs is None:
+            # Collect all TensorVariables that are graph inputs with requires_grad=True
+            input_vars = []
+            for var in tx.output.input_source_to_var.values():
+                if isinstance(var, TensorVariable) and var.requires_grad:
+                    input_vars.append(var)
+
+            if not input_vars:
+                # No tensors require grad - backward is a no-op
+                return ConstantVariable.create(None)
+
+            # Create a list variable for the inputs
+            inputs = VariableTracker.build(tx, input_vars)
+
+        # Rewrite tensor.backward(inputs=params) as:
+        # grads = torch.autograd.grad(tensor, params, gradient, retain_graph, create_graph)
+        # for param, grad in zip(params, grads):
+        #     torch.ops.inductor.accumulate_grad_(param, grad)
+
+        # Build kwargs for autograd.grad
+        grad_kwargs = {}
+        if retain_graph is not None:
+            grad_kwargs["retain_graph"] = retain_graph
+        if create_graph is not None:
+            grad_kwargs["create_graph"] = create_graph
+        # allow_unused=True matches eager backward() behavior where unconnected tensors
+        # simply don't get gradients (no error is raised)
+        grad_kwargs["allow_unused"] = VariableTracker.build(tx, True)
+
+        # Call autograd.grad
+        grad_args = [self, inputs]
+        if gradient is not None:
+            grad_args.append(gradient)
+
+        autograd_grad_fn = VariableTracker.build(tx, torch.autograd.grad)
+        grads_var = autograd_grad_fn.call_function(tx, grad_args, grad_kwargs)
+
+        # Get the inputs as a list/tuple
+        if isinstance(inputs, variables.BaseListVariable):
+            input_vars = inputs.items
+        else:
+            # Single tensor case
+            input_vars = [inputs]
+
+        # Accumulate gradients for each input using torch.ops.inductor.accumulate_grad_
+        # This op is handled specially by dynamo to use polyfills.accumulate_grad
+        accumulate_grad_fn = VariableTracker.build(
+            tx, torch.ops.inductor.accumulate_grad_.default
         )
+
+        for i, input_var in enumerate(input_vars):
+            # Get the i-th gradient
+            grad_i = grads_var.call_method(
+                tx, "__getitem__", [VariableTracker.build(tx, i)], {}
+            )
+            # Accumulate the gradient
+            accumulate_grad_fn.call_function(tx, [input_var, grad_i], {})
+
+        # backward() returns None
+        return VariableTracker.build(tx, None)
 
     def method_data_ptr(self, *args, **kwargs):
         return DataPtrVariable(self)
