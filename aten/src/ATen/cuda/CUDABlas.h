@@ -118,6 +118,7 @@ enum GEMMAndBiasActivationEpilogue {
     const Dtype* mat2_ptr, \
     int64_t mat2_ld, \
     const Dtype* bias_ptr, \
+    int64_t bias_ld, \
     C_Dtype* result_ptr, \
     int64_t result_ld, \
     Epilogue

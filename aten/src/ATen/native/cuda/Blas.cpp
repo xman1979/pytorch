@@ -253,7 +253,7 @@ static bool isInputCompliesAddmmCudaLt(
 }
 
 template <typename scalar_t>
-void launchTunableGemmAndBias(cublasCommonArgs &args, const Scalar& alpha, const scalar_t* bias, cuda::blas::GEMMAndBiasActivationEpilogue activation) {
+void launchTunableGemmAndBias(cublasCommonArgs &args, const Scalar& alpha, const scalar_t* bias, int64_t bias_ld, cuda::blas::GEMMAndBiasActivationEpilogue activation) {
   bool transa_ = ((args.transa != 'n') && (args.transa != 'N'));
   bool transb_ = ((args.transb != 'n') && (args.transb != 'N'));
   at::cuda::tunable::GemmAndBiasParams<scalar_t> params;
@@ -270,6 +270,7 @@ void launchTunableGemmAndBias(cublasCommonArgs &args, const Scalar& alpha, const
   params.c = args.result->data_ptr<scalar_t>();
   params.ldc = args.result_ld;
   params.bias = bias;
+  params.ldbias = bias_ld;
   params.activation = activation;
   if (transa_ && transb_) {
     static at::cuda::tunable::GemmAndBiasTunableOp<scalar_t, at::cuda::tunable::BlasOp::T, at::cuda::tunable::BlasOp::T> gemm{};
@@ -311,7 +312,7 @@ bool launchGemmAndBiasCublasLt(
   if (tuning_ctx->IsTunableOpEnabled()) {
     // TODO: maybe also return some success state?
     launchTunableGemmAndBias<scalar_t>(
-      args, alpha, self_ptr, activation_to_gemm_and_blas_arg(activation)
+      args, alpha, self_ptr, -1, activation_to_gemm_and_blas_arg(activation)
     );
     return true;
   }
@@ -328,6 +329,7 @@ bool launchGemmAndBiasCublasLt(
     args.matb->const_data_ptr<scalar_t>(),
     args.ldb,
     self_ptr,
+    -1,
     args.result->data_ptr<res_scalar_t>(),
     args.result_ld,
     activation_to_gemm_and_blas_arg(activation)
