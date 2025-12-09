@@ -1497,11 +1497,11 @@ def speculate_subgraph_with_auto_output_flattening(
                 allow_side_effects
                 or tx.output.current_tracer.traced_with_externally_visible_side_effects
             )
-            if allow_side_effects:
-                extra_outputs = _collect_intermediate_outputs(
-                    tx, subtracer, graph_output_vts
-                )
-                graph_output_vts = graph_output_vts + tuple(extra_outputs)
+            # if allow_side_effects:
+            #     extra_outputs = _collect_intermediate_outputs(
+            #         tx, subtracer, graph_output_vts
+            #     )
+            #     graph_output_vts = graph_output_vts + tuple(extra_outputs)
 
             tx.output.current_tracer.traced_with_externally_visible_side_effects = (
                 old_value
@@ -4267,7 +4267,7 @@ class InvokeSubgraphHigherOrderVariable(WrapHigherOrderVariable):
     supports_input_mutation = True
     supports_aliasing = False
     # TODO - make this true to support mutation
-    allow_side_effects = False
+    allow_side_effects = True
 
     def install_subgraph_in_output_graph(
         self, tx, fn_vt, fn_args_vt, kwargs, body_gmod, attr_name
@@ -4338,6 +4338,96 @@ class InvokeSubgraphHigherOrderVariable(WrapHigherOrderVariable):
         args: "list[VariableTracker]",
         kwargs: "dict[str, VariableTracker]",
     ) -> "VariableTracker":
+        fn_vt = args[0]
+        is_pure = args[1].as_python_constant()
+
+        invoke_subgraph_cache = (
+            tx.output.tracing_context.hop_dispatch_set_cache.get_cache(
+                torch._higher_order_ops.invoke_subgraph
+            )
+        )
+
+        previously_installed_submodules = []
+        if is_pure and invoke_subgraph_cache:
+            """
+            1) Must be pure - its stronger than no side effects, the function
+            should not rely on any global state that can change between calls.
+            Depends ONLY on inputs.
+            2) Must have all inputs already lifted as the original function arguments
+            3) Must return a flat tuple of tensors. Can be extended to support tensor or tuple of tensors.
+            4) All the inputs must be tensors. Can be probably extended to support constants, but no checking.
+            5) Different distinct layers need to be wrapped with different
+            compile_nested_region. This is because we cache on fn_id. Different API is possible, but it can be clunky.
+            6)
+            """
+
+            if isinstance(fn_vt, UserFunctionVariable):
+                fn_id = id(fn_vt.get_function())
+            else:
+                assert isinstance(fn_vt, UnspecializedNNModuleVariable)
+                fn_id = id(fn_vt.value.forward.__func__)
+
+            previously_installed_submodules = (
+                invoke_subgraph_cache.get_dynamo_installed_submodules(fn_id)
+            )
+            if previously_installed_submodules:
+                submodule_name = previously_installed_submodules[0]
+                mod = tx.output.nn_modules[submodule_name]
+                old_fake_outputs = [
+                    x.meta["example_value"]
+                    for x in mod.graph.find_nodes(op="output")[0].args[0]
+                ]
+                new_fake_outputs = []
+                for old_fake in old_fake_outputs:
+                    # Create new fake tensors for subgraph outputs
+                    from torch._subclasses.fake_tensor import FakeTensor
+
+                    empty = torch.empty_strided(
+                        old_fake.shape,
+                        old_fake.stride(),
+                        dtype=old_fake.dtype,
+                        layout=old_fake.layout,
+                        device="meta",
+                        requires_grad=old_fake.requires_grad,
+                    )
+
+                    new_fake_outputs.append(
+                        FakeTensor(tx.output.fake_mode, empty, old_fake.device)
+                    )
+                    flat_example_value = tuple(new_fake_outputs)
+
+                    # Find proxies for the inputs for invoke_subgraph.
+                    # Since we use `automatic_with_ordered_inputs`, we can
+                    # assume that that the inputs to the subgraph are same as
+                    # the original inputs.
+                    tensor_args = [
+                        x for x in args if isinstance(x, variables.TensorVariable)
+                    ]
+                    proxy_tensor_args = [x.as_proxy() for x in tensor_args]
+                    body_node = make_attr(tx, submodule_name)
+                    p_args = (
+                        body_node,
+                        submodule_name,
+                        *proxy_tensor_args,
+                    )
+
+                    from .builder import wrap_fx_proxy
+
+                    # Store the invocation as a call
+                    flat_variable = wrap_fx_proxy(
+                        tx=tx,
+                        proxy=tx.output.create_proxy(
+                            "call_function",
+                            torch._higher_order_ops.invoke_subgraph,
+                            args=p_args,
+                            kwargs={},
+                        ),
+                        example_value=flat_example_value,
+                    )
+
+                    # For is_pure, we will have to assume that flat_variable is same as body_r.
+                    return flat_variable
+
         # This flattens the kwargs into lifted args
         (
             p_args,
@@ -4347,7 +4437,7 @@ class InvokeSubgraphHigherOrderVariable(WrapHigherOrderVariable):
             _,
             body_name,
             body_graph_output_vts,
-        ) = self.create_wrapped_node(tx, args[0], args[1:], kwargs, "invoke_subgraph")
+        ) = self.create_wrapped_node(tx, args[0], args[2:], kwargs, "invoke_subgraph")
 
         if len(p_kwargs) > 0:
             unimplemented(
