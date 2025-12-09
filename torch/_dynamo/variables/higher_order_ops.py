@@ -393,14 +393,126 @@ def _assert_tensors_nonaliasing(inputs, outputs):
     )
 
 
-def _collect_intermediate_outputs(tx, subtracer, graph_output_vts):
+def get_tensor_storages(tensor) -> set:
     """
-    Collect intermediate outputs for side effects support.
+    Get storage references from a tensor.
 
-    Returns all tracked tensor/symint variables that are not already in graph_output_vts.
+    Handles regular tensors, traceable wrapper subclasses, and sparse tensors.
+    Returns a set of StorageWeakRef objects.
+
+    Args:
+        tensor: The tensor to extract storages from
+
+    Returns:
+        Set of StorageWeakRef objects for the tensor's storage(s)
     """
+    from torch._subclasses.fake_tensor import get_plain_tensors
+    from torch.multiprocessing.reductions import StorageWeakRef
+    from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+
+    storages: set = set()
+
+    if not isinstance(tensor, torch.Tensor):
+        return storages
+
+    if tensor.is_sparse or tensor.is_sparse_csr:
+        return storages
+
+    if is_traceable_wrapper_subclass(tensor):
+        inner_tensors = []
+        get_plain_tensors(tensor, inner_tensors)
+        for inner in inner_tensors:
+            if isinstance(inner, torch.Tensor):
+                storages.add(StorageWeakRef(inner._typed_storage()))
+    else:
+        storages.add(StorageWeakRef(tensor._typed_storage()))
+
+    return storages
+
+
+class StorageAliasingTracker:
+    """
+    Tracks storage references to detect aliasing between tensors.
+
+    This class encapsulates the logic for collecting storages from tensors
+    and checking for aliasing conflicts. Used to filter intermediate outputs
+    that would create input-output or output-output aliasing.
+    """
+
+    def __init__(self):
+        self.excluded_storages: set = set()
+
+    def _collect_storages_from_tensor(self, example_value):
+        """
+        Collect storage references from a tensor and add them to excluded storages.
+        """
+        self.excluded_storages.update(get_tensor_storages(example_value))
+
+    def collect_from_inputs(self, tx):
+        """Collect storages from graph input placeholders."""
+        from torch._higher_order_ops.utils import _collect_fake_inputs
+
+        for node in tx.output.graph.nodes:
+            if node.op == "placeholder":
+                example_value = _collect_fake_inputs([node])[0]
+                if isinstance(example_value, torch.Tensor):
+                    self._collect_storages_from_tensor(example_value)
+            else:
+                break
+
+    def collect_from_outputs(self, graph_output_vts):
+        """Collect storages from existing graph outputs."""
+        from torch._higher_order_ops.utils import _collect_fake_inputs
+
+        for vt in graph_output_vts:
+            proxy = vt.as_proxy()
+            example_value = _collect_fake_inputs([proxy.node])[0]
+            if isinstance(example_value, torch.Tensor):
+                self._collect_storages_from_tensor(example_value)
+
+    def check_and_track(self, proxy_node) -> bool:
+        """
+        Check if a proxy node can be added without aliasing, and track it if so.
+
+        Returns True if the node can be safely added (no aliasing), False otherwise.
+        """
+        from torch._higher_order_ops.utils import _collect_fake_inputs
+        from torch.multiprocessing.reductions import StorageWeakRef
+        from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+
+        example_value = _collect_fake_inputs([proxy_node])[0]
+
+        # Non-tensor outputs (e.g., symints) don't have aliasing concerns
+        if not isinstance(example_value, torch.Tensor):
+            return True
+
+        # Check if any storage aliases with existing inputs/outputs
+        tensor_storages = get_tensor_storages(example_value)
+        if tensor_storages & self.excluded_storages:
+            return False
+
+        # Track this tensor's storage (for wrapper subclasses, inner storages were already checked)
+        if not is_traceable_wrapper_subclass(example_value):
+            if not (example_value.is_sparse or example_value.is_sparse_csr):
+                self.excluded_storages.add(
+                    StorageWeakRef(example_value._typed_storage())
+                )
+
+        return True
+
+
+def collect_intermediate_outputs(
+    tx, subtracer, graph_output_vts, filter_aliased_intermediates=False
+):
     extra_outputs = []
     existing_out_proxies = {vt.as_proxy() for vt in graph_output_vts}
+
+    # Build the aliasing tracker if we're filtering
+    tracker = None
+    if filter_aliased_intermediates:
+        tracker = StorageAliasingTracker()
+        tracker.collect_from_inputs(tx)
+        tracker.collect_from_outputs(graph_output_vts)
 
     for out in subtracer.tracked_tensor_or_symint_vt:
         proxy = out.as_proxy()
@@ -413,7 +525,16 @@ def _collect_intermediate_outputs(tx, subtracer, graph_output_vts):
         if isinstance(out, SymNodeVariable) and out.python_type() is float:
             continue
 
-        extra_outputs.append(out)
+        if not filter_aliased_intermediates:
+            extra_outputs.append(out)
+        else:
+            # Filter out intermediates that alias with inputs or outputs.
+            # This is needed for HOPs like invoke_subgraph that don't support aliasing.
+            # TODO: If a filtered intermediate is captured by side effects (e.g., appended
+            # to a list), it will fail later with "does not belong to this Graph" error
+            # when the outer graph tries to use it. See test_side_effect_with_aliased_intermediate.
+            if tracker.check_and_track(proxy.node):
+                extra_outputs.append(out)
 
     return extra_outputs
 
@@ -1278,6 +1399,45 @@ def speculate_subgraph_with_auto_output_flattening(
     # If True, exposes intermediates to subgraph outputs to allow later tensor ops to
     # access intermediates from the subgraph, this is useful for mutation
     allow_side_effects: bool = False,
+    # Controls whether to filter aliased intermediates when collecting extra outputs.
+    # - True: Filter out intermediates that alias with inputs or outputs (strict, for invoke_subgraph)
+    # - False: Allow aliased intermediates (for checkpoint/autograd.Function which get desugared/inlined)
+    #
+    # Example where filtering is needed:
+    #
+    #   @invoke_subgraph
+    #   def gn(x):
+    #       view = x.view(2, 4)  # intermediate that aliases input x
+    #       y = torch.sin(view)
+    #       return torch.cos(view)
+    #
+    #   def fn(x):
+    #       res = gn(x)
+    #       return res + 4
+    #
+    # In this case, if we don't filter `view`, we would later error because some HOPs
+    # have strict aliasing checks on inputs/outputs.
+    #
+    # This does however introduce a subtle issue when we do something like:
+    #
+    #   captured = []
+    #
+    #   @invoke_subgraph
+    #   def gn(x):
+    #       view = x.view(2, 4)  # intermediate that aliases input x
+    #       y = torch.sin(view)
+    #       captured.append(view)
+    #       return torch.cos(view)
+    #
+    #   def fn(x):
+    #       res = gn(x)
+    #       return res + captured[0]
+    #
+    # In this case, we will not replay the side effect on `captured` in the graph,
+    # which fails with a not-so-nice error. We will address this in a follow-up PR
+    # because this case is rare. This is not a regression because side effects were
+    # never supported for invoke_subgraph anyway.
+    filter_aliased_intermediates: bool = False,
     # TODO - supports input_mutation and aliasing should be False by default for strictness
     supports_input_mutation: bool = True,
     supports_aliasing: bool = True,
@@ -1494,8 +1654,8 @@ def speculate_subgraph_with_auto_output_flattening(
                 or tx.output.current_tracer.traced_with_externally_visible_side_effects
             )
             if allow_side_effects:
-                extra_outputs = _collect_intermediate_outputs(
-                    tx, subtracer, graph_output_vts
+                extra_outputs = collect_intermediate_outputs(
+                    tx, subtracer, graph_output_vts, filter_aliased_intermediates
                 )
                 graph_output_vts = graph_output_vts + tuple(extra_outputs)
 
@@ -2938,6 +3098,9 @@ class WrapHigherOrderVariable(TorchHigherOrderOperatorVariable):
             description,
             source_target=self.value,
             allow_side_effects=self.allow_side_effects,
+            filter_aliased_intermediates=getattr(
+                self, "filter_aliased_intermediates", False
+            ),
             supports_input_mutation=self.supports_input_mutation,
             supports_aliasing=self.supports_aliasing,
         )
@@ -4262,8 +4425,11 @@ class BaseHOPVariable(WrapHigherOrderVariable):
 class InvokeSubgraphHigherOrderVariable(WrapHigherOrderVariable):
     supports_input_mutation = True
     supports_aliasing = False
-    # TODO - make this true to support mutation
-    allow_side_effects = False
+    allow_side_effects = True
+    # invoke_subgraph is NOT desugared in AOTAutograd, so the HOP input/output
+    # shouldn't alias. For checkpoint HOP, we inline it so we don't need
+    # alias analysis as functionalization would just work on the flat graph.
+    filter_aliased_intermediates = True
 
     def install_subgraph_in_output_graph(
         self, tx, fn_vt, fn_args_vt, kwargs, body_gmod, attr_name
