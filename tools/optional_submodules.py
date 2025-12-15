@@ -36,11 +36,12 @@ def read_nccl_pin() -> str:
 
 
 def checkout_nccl() -> None:
-    release_tag = read_nccl_pin()
+    #release_tag = read_nccl_pin()
+    release_tag = "v2.27.7-1-otel"
     print(f"-- Checkout nccl release tag: {release_tag}")
     nccl_basedir = third_party_path / "nccl"
     if not nccl_basedir.exists():
-        _checkout_by_tag("https://github.com/NVIDIA/nccl", release_tag)
+        _checkout_by_tag("https://github.com/xman1979/nccl", release_tag)
 
 
 def checkout_eigen() -> None:
