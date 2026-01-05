@@ -59,12 +59,16 @@ class AutoTrainingMetricsCollector:
 
     # Loss module classes to hook into
     LOSS_MODULES = (
+        # Standard PyTorch loss modules
         'CrossEntropyLoss', 'NLLLoss', 'MSELoss', 'L1Loss', 'SmoothL1Loss',
         'BCELoss', 'BCEWithLogitsLoss', 'CTCLoss', 'KLDivLoss', 'HuberLoss',
         'MultiMarginLoss', 'MultiLabelMarginLoss', 'MultiLabelSoftMarginLoss',
         'SoftMarginLoss', 'TripletMarginLoss', 'TripletMarginWithDistanceLoss',
         'CosineEmbeddingLoss', 'HingeEmbeddingLoss', 'MarginRankingLoss',
         'PoissonNLLLoss', 'GaussianNLLLoss',
+        # Custom/fused loss modules commonly used in training
+        'FusedCrossEntropyLoss', 'ChunkedCrossEntropyLoss',
+        'LabelSmoothingCrossEntropyLoss', 'FocalLoss',
     )
 
     def __init__(self, config: Optional[MetricsConfig] = None):
@@ -73,7 +77,7 @@ class AutoTrainingMetricsCollector:
 
         # State tracking
         self._enabled = False
-        self._epoch = 0
+        self._epoch = 0  # 0-indexed to match Python convention (for epoch in range(n))
         self._training_step = 0
         self._batch_count = 0
         self._last_loss: Optional[float] = None
@@ -223,6 +227,10 @@ class AutoTrainingMetricsCollector:
         if not self._enabled:
             return
 
+        # Skip loss modules - they should not reset forward timing
+        if self._is_loss_module(module):
+            return
+
         with self._lock:
             self._forward_depth += 1
             if self._forward_depth == 1:
@@ -254,11 +262,16 @@ class AutoTrainingMetricsCollector:
         if not self._enabled:
             return
 
+        # Skip loss modules - they should not affect forward timing
+        if self._is_loss_module(module):
+            return
+
         with self._lock:
             self._forward_depth -= 1
             if self._forward_depth == 0:
                 if self._forward_start is not None:
-                    self._forward_pass_time_ms = (
+                    # Accumulate forward time (for gradient accumulation scenarios)
+                    self._forward_pass_time_ms += (
                         time.perf_counter() - self._forward_start
                     ) * 1000
                     self._forward_start = None
@@ -271,6 +284,39 @@ class AutoTrainingMetricsCollector:
     ) -> None:
         """Hook on loss modules to capture loss values."""
         if not self._enabled:
+            return
+
+        with self._lock:
+            # Capture scalar loss value
+            if isinstance(output, torch.Tensor):
+                try:
+                    if output.numel() == 1:
+                        self._last_loss = output.detach().item()
+                except Exception:
+                    pass
+
+    def _is_loss_module(self, module: torch.nn.Module) -> bool:
+        """Check if a module is a loss module."""
+        class_name = module.__class__.__name__
+        # Check explicit list first, then check if name ends with "Loss"
+        return class_name in self.LOSS_MODULES or class_name.endswith('Loss')
+
+    def _global_forward_hook_for_loss(
+        self,
+        module: torch.nn.Module,
+        args: Tuple[Any, ...],
+        output: Any,
+    ) -> None:
+        """
+        Global forward hook that captures loss from ANY loss module.
+
+        This is a fallback to catch loss modules that weren't hooked during creation.
+        """
+        if not self._enabled:
+            return
+
+        # Only process loss modules
+        if not self._is_loss_module(module):
             return
 
         with self._lock:
@@ -321,6 +367,11 @@ class AutoTrainingMetricsCollector:
         self._had_backward = False
         self._had_optimizer_step = False
         self._last_loss = None
+
+        # Reset timing start markers to ensure clean state
+        self._forward_start = None
+        self._backward_start = None
+        self._optimizer_start = None
 
         # Start data loading timer (will be stopped when forward starts)
         self._data_loading_start = time.perf_counter()
@@ -381,7 +432,8 @@ class AutoTrainingMetricsCollector:
 
         with self._lock:
             if self._backward_start is not None:
-                self._backward_pass_time_ms = (
+                # Accumulate backward time (for gradient accumulation scenarios)
+                self._backward_pass_time_ms += (
                     time.perf_counter() - self._backward_start
                 ) * 1000
                 self._backward_start = None
@@ -569,14 +621,23 @@ class AutoTrainingMetricsCollector:
             )
             self._hook_handles.append(handle)
 
+        # Global forward hook for loss capture - catches ALL loss modules
+        # regardless of when they were created
+        handle = torch.nn.modules.module.register_module_forward_hook(
+            self._global_forward_hook_for_loss
+        )
+        self._hook_handles.append(handle)
+
         # Optimizer hooks
         if self.config.track_optimizer_time:
-            handle = torch.optim.optimizer.register_optimizer_step_pre_hook(
+            # Lazy import to avoid circular import during torch initialization
+            import torch.optim.optimizer as optim_module
+            handle = optim_module.register_optimizer_step_pre_hook(
                 self._optimizer_pre_hook
             )
             self._hook_handles.append(handle)
 
-            handle = torch.optim.optimizer.register_optimizer_step_post_hook(
+            handle = optim_module.register_optimizer_step_post_hook(
                 self._optimizer_post_hook
             )
             self._hook_handles.append(handle)

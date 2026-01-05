@@ -390,18 +390,18 @@ def main():
         print("=" * 60)
         print()
 
-        # Force enable for demo purposes
-        os.environ["PYTORCH_TRAINING_METRICS_ENABLED"] = "1"
     else:
         print(f"Using OTEL endpoint: {otel_endpoint}")
         print()
-
+    # Force enable for demo purposes
+    os.environ["PYTORCH_TRAINING_METRICS_ENABLED"] = "1"
+    print(f"force enable PYTORCH_TRAINING_METRICS_ENABLED = 1 for demo purpose")
     # Run examples - starting with the zero-code-change example!
     example_zero_code_change()
-    example_basic_usage()
-    example_context_manager_style()
-    example_custom_config()
-    example_direct_collector_access()
+    #example_basic_usage()
+    #example_context_manager_style()
+    #example_custom_config()
+    #example_direct_collector_access()
 
     print("=" * 60)
     print("All examples completed successfully!")
