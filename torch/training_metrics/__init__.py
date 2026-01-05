@@ -56,13 +56,11 @@ from .collector import (
     is_enabled,
     _auto_initialize,
 )
-from .context import TrainingContext
 from .config import MetricsConfig
 
 __all__ = [
     "AutoTrainingMetricsCollector",
     "TrainingMetricsCollector",
-    "TrainingContext",
     "MetricsConfig",
     "enable_training_metrics",
     "disable_training_metrics",

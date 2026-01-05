@@ -3,8 +3,7 @@
 """
 Example script demonstrating PyTorch training metrics instrumentation.
 
-This script shows different usage patterns for the torch.training_metrics module,
-from fully automatic (zero code changes) to various manual control options.
+This script shows the zero-code-change usage pattern for the torch.training_metrics module.
 
 The metrics are exported to ODS3 via OpenTelemetry using the fair_model schema.
 
@@ -75,7 +74,7 @@ def create_dummy_data(num_samples=1000, input_dim=100, num_classes=10, batch_siz
 
 def example_zero_code_change():
     """
-    Example 0: ZERO CODE CHANGE usage - the recommended approach!
+    Example: ZERO CODE CHANGE usage - the recommended approach!
 
     This demonstrates what happens when you run an unmodified training script
     with OTEL_EXPORTER_OTLP_ENDPOINT set. The metrics are collected AUTOMATICALLY:
@@ -90,7 +89,7 @@ def example_zero_code_change():
     No special imports, no context managers, no decorators needed!
     """
     print("=" * 60)
-    print("Example 0: ZERO CODE CHANGE (Fully Automatic)")
+    print("Example: ZERO CODE CHANGE (Fully Automatic)")
     print("=" * 60)
     print()
     print("This example shows a COMPLETELY UNMODIFIED training loop.")
@@ -136,246 +135,8 @@ def example_zero_code_change():
     print()
 
 
-def example_basic_usage():
-    """
-    Example 1: Basic usage with minimal code changes.
-
-    This approach uses the TrainingContext to track epochs and batches,
-    while forward pass and optimizer step timing is automatic via hooks.
-    """
-    print("=" * 60)
-    print("Example 1: Basic Usage with TrainingContext")
-    print("=" * 60)
-
-    from torch.training_metrics import (
-        enable_training_metrics,
-        disable_training_metrics,
-        TrainingContext,
-    )
-
-    # Create model, data, optimizer
-    model = create_simple_model()
-    train_loader = create_dummy_data()
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-    # Enable automatic metrics collection
-    # This registers global hooks on nn.Module and Optimizer
-    enable_training_metrics()
-
-    num_epochs = 3
-
-    # Use TrainingContext to track epochs and batches
-    with TrainingContext() as ctx:
-        for epoch in range(num_epochs):
-            ctx.set_epoch(epoch)
-            total_loss = 0.0
-
-            for batch_idx, (data, target) in enumerate(train_loader):
-                # Start batch timing (also starts data loading timer)
-                ctx.start_batch()
-
-                # Forward pass (automatically timed via hooks)
-                output = model(data)
-                loss = criterion(output, target)
-
-                # Backward pass (timed with start/end calls)
-                ctx.start_backward()
-                optimizer.zero_grad()
-                loss.backward()
-                ctx.end_backward()
-
-                # Optimizer step (automatically timed via hooks)
-                optimizer.step()
-
-                # End batch and record metrics
-                ctx.end_batch(loss=loss.item())
-
-                total_loss += loss.item()
-
-            avg_loss = total_loss / len(train_loader)
-            print(f"Epoch {epoch + 1}/{num_epochs}, Avg Loss: {avg_loss:.4f}")
-
-    # Disable metrics collection when done
-    disable_training_metrics()
-
-    print("Training complete!\n")
-
-
-def example_context_manager_style():
-    """
-    Example 2: Using nested context managers for cleaner code.
-
-    This approach uses ctx.batch() and batch.backward() context managers
-    for automatic timing with less boilerplate.
-    """
-    print("=" * 60)
-    print("Example 2: Nested Context Managers (Cleaner Style)")
-    print("=" * 60)
-
-    from torch.training_metrics import (
-        enable_training_metrics,
-        disable_training_metrics,
-        TrainingContext,
-    )
-
-    model = create_simple_model()
-    train_loader = create_dummy_data()
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-    enable_training_metrics()
-
-    num_epochs = 2
-    global_step = 0
-
-    with TrainingContext() as ctx:
-        for epoch in range(num_epochs):
-            ctx.set_epoch(epoch)
-
-            for batch_idx, (data, target) in enumerate(train_loader):
-                # Using nested context managers for automatic timing
-                with ctx.batch() as batch:
-                    # Forward pass (auto-timed)
-                    output = model(data)
-                    loss = criterion(output, target)
-
-                    # Backward pass with context manager
-                    with batch.backward():
-                        optimizer.zero_grad()
-                        loss.backward()
-
-                    # Optimizer step (auto-timed)
-                    optimizer.step()
-
-                    # Set the loss value
-                    batch.set_loss(loss.item())
-
-                global_step += 1
-
-            print(f"Epoch {epoch + 1}/{num_epochs} completed")
-
-    disable_training_metrics()
-    print("Training complete!\n")
-
-
-def example_custom_config():
-    """
-    Example 3: Using custom configuration.
-
-    This shows how to customize the metrics collection behavior.
-    """
-    print("=" * 60)
-    print("Example 3: Custom Configuration")
-    print("=" * 60)
-
-    from torch.training_metrics import (
-        enable_training_metrics,
-        disable_training_metrics,
-        TrainingContext,
-        MetricsConfig,
-    )
-
-    # Create custom configuration
-    config = MetricsConfig(
-        # Log every 5 batches to reduce overhead
-        log_every_n_batches=5,
-        # Export metrics every 10 seconds
-        export_interval_ms=10000,
-        # Custom job metadata
-        job_id=os.getenv("SLURM_JOB_ID", "custom_job_123"),
-        cluster="my_cluster",
-        # Disable optimizer timing if not needed
-        track_optimizer_time=True,
-    )
-
-    model = create_simple_model()
-    train_loader = create_dummy_data()
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-    # Enable with custom config
-    enable_training_metrics(config=config)
-
-    with TrainingContext() as ctx:
-        for epoch in range(2):
-            ctx.set_epoch(epoch)
-
-            for batch_idx, (data, target) in enumerate(train_loader):
-                ctx.start_batch()
-
-                output = model(data)
-                loss = criterion(output, target)
-
-                ctx.start_backward()
-                optimizer.zero_grad()
-                loss.backward()
-                ctx.end_backward()
-
-                optimizer.step()
-                ctx.end_batch(loss=loss.item())
-
-            print(f"Epoch {epoch + 1}/2 completed")
-
-    disable_training_metrics()
-    print("Training complete!\n")
-
-
-def example_direct_collector_access():
-    """
-    Example 4: Direct access to the collector for advanced use cases.
-
-    This shows how to directly access the metrics collector for
-    custom timing or metrics not covered by the standard API.
-    """
-    print("=" * 60)
-    print("Example 4: Direct Collector Access")
-    print("=" * 60)
-
-    from torch.training_metrics import enable_training_metrics, get_collector
-
-    model = create_simple_model()
-    train_loader = create_dummy_data()
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-    # Enable and get the collector
-    collector = enable_training_metrics()
-
-    for epoch in range(2):
-        collector.set_epoch(epoch)
-
-        for batch_idx, (data, target) in enumerate(train_loader):
-            collector.start_batch()
-
-            # Forward
-            output = model(data)
-            loss = criterion(output, target)
-
-            # Backward
-            collector.start_backward()
-            optimizer.zero_grad()
-            loss.backward()
-            collector.end_backward()
-
-            # Step
-            optimizer.step()
-
-            # Record with explicit training step
-            collector.end_batch(
-                loss=loss.item(),
-                training_step=epoch * len(train_loader) + batch_idx
-            )
-
-        print(f"Epoch {epoch + 1}/2 completed")
-
-    # Shutdown properly to flush metrics
-    collector.shutdown()
-    print("Training complete!\n")
-
-
 def main():
-    """Run all examples."""
+    """Run the zero-code-change example."""
     # Check if OTEL endpoint is configured
     otel_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
     if not otel_endpoint:
@@ -389,22 +150,20 @@ def main():
         print("but won't be exported to ODS3.")
         print("=" * 60)
         print()
-
     else:
         print(f"Using OTEL endpoint: {otel_endpoint}")
         print()
+
     # Force enable for demo purposes
     os.environ["PYTORCH_TRAINING_METRICS_ENABLED"] = "1"
-    print(f"force enable PYTORCH_TRAINING_METRICS_ENABLED = 1 for demo purpose")
-    # Run examples - starting with the zero-code-change example!
+    print("Force enable PYTORCH_TRAINING_METRICS_ENABLED=1 for demo purpose")
+    print()
+
+    # Run the zero-code-change example
     example_zero_code_change()
-    #example_basic_usage()
-    #example_context_manager_style()
-    #example_custom_config()
-    #example_direct_collector_access()
 
     print("=" * 60)
-    print("All examples completed successfully!")
+    print("Example completed successfully!")
     print()
     print("KEY TAKEAWAY: For most use cases, you don't need to change")
     print("any code! Just set OTEL_EXPORTER_OTLP_ENDPOINT and run.")
