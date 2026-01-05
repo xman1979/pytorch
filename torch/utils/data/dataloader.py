@@ -636,6 +636,16 @@ class _BaseDataLoaderIter:
         self._dataset = loader.dataset
         self._shared_seed = None
         self._pg = None
+
+        # Training metrics instrumentation
+        self._training_metrics_collector = None
+        self._training_metrics_data_load_start = None
+        try:
+            from torch.training_metrics.collector import get_collector, is_enabled
+            if is_enabled():
+                self._training_metrics_collector = get_collector()
+        except ImportError:
+            pass
         if isinstance(self._dataset, IterDataPipe):
             if dist.is_available() and dist.is_initialized():
                 self._pg = dist.new_group(backend="gloo")
@@ -729,7 +739,27 @@ class _BaseDataLoaderIter:
             if self._sampler_iter is None:
                 # TODO(https://github.com/pytorch/pytorch/issues/76750)
                 self._reset()  # type: ignore[call-arg]
-            data = self._next_data()
+
+            # Training metrics: start data loading time measurement
+            if self._training_metrics_collector is not None:
+                import time
+                self._training_metrics_data_load_start = time.perf_counter()
+
+            try:
+                data = self._next_data()
+            except StopIteration:
+                # Epoch completed - notify the collector
+                if self._training_metrics_collector is not None:
+                    self._training_metrics_collector.on_epoch_end()
+                raise
+
+            # Training metrics: record data loading time
+            if self._training_metrics_collector is not None and self._training_metrics_data_load_start is not None:
+                import time
+                data_load_time = time.perf_counter() - self._training_metrics_data_load_start
+                self._training_metrics_collector.record_data_loading_time(data_load_time)
+                self._training_metrics_data_load_start = None
+
             self._num_yielded += 1
             if (
                 self._dataset_kind == _DatasetKind.Iterable
@@ -1217,6 +1247,10 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
         self._worker_pids_set = True
         self._reset(loader, first_iter=True)
 
+        # Training metrics: register this iterator for prefetch queue size tracking
+        if self._training_metrics_collector is not None:
+            self._training_metrics_collector.register_dataloader_iterator(self)
+
     def _reset(self, loader, first_iter=False):
         super()._reset(loader, first_iter)
         self._send_idx = 0  # idx of the next task to be sent to workers
@@ -1651,4 +1685,8 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
                 w.terminate()
 
     def __del__(self):
+        # Training metrics: unregister this iterator
+        if hasattr(self, '_training_metrics_collector') and self._training_metrics_collector is not None:
+            self._training_metrics_collector.unregister_dataloader_iterator(self)
+
         self._shutdown_workers()

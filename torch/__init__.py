@@ -2306,6 +2306,10 @@ quantized_gru = ops.aten.quantized_gru
 # information.
 from torch import masked as masked
 
+# Import training metrics for automatic instrumentation of training loops
+# This provides ODS3/OpenTelemetry-based metrics collection for training
+from torch import training_metrics as training_metrics
+
 # Import removed ops with error message about removal
 from torch._linalg_utils import (  # type: ignore[misc]
     _symeig as symeig,

@@ -351,15 +351,30 @@ def backward(
     # The reason we repeat the same comment below is that
     # some Python versions print out the first line of a multi-line function
     # calls in the traceback and some print out the last line
-    _engine_run_backward(
-        tensors,
-        grad_tensors_,
-        retain_graph,
-        create_graph,
-        inputs_tuple,
-        allow_unreachable=True,
-        accumulate_grad=True,
-    )
+
+    # Training metrics instrumentation for backward pass timing
+    _training_metrics_collector = None
+    try:
+        from torch.training_metrics.collector import get_collector, is_enabled
+        if is_enabled():
+            _training_metrics_collector = get_collector()
+            _training_metrics_collector.start_backward()
+    except ImportError:
+        pass
+
+    try:
+        _engine_run_backward(
+            tensors,
+            grad_tensors_,
+            retain_graph,
+            create_graph,
+            inputs_tuple,
+            allow_unreachable=True,
+            accumulate_grad=True,
+        )
+    finally:
+        if _training_metrics_collector is not None:
+            _training_metrics_collector.end_backward()
 
 
 def grad(
