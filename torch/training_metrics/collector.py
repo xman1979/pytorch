@@ -227,12 +227,16 @@ class AutoTrainingMetricsCollector:
         if not self._enabled:
             return
 
+        # Skip during torch.compile tracing to avoid Dynamo compatibility issues
+        if torch.compiler.is_compiling():
+            return
+
         # Skip loss modules - they should not reset forward timing
         if self._is_loss_module(module):
             return
 
         # Note: No lock needed here - these variables are only accessed from the
-        # main training thread. Avoiding RLock makes this Dynamo-compatible.
+        # main training thread.
         self._forward_depth += 1
         if self._forward_depth == 1:
             # Start of a new training batch if we've completed a previous one
@@ -263,12 +267,16 @@ class AutoTrainingMetricsCollector:
         if not self._enabled:
             return
 
+        # Skip during torch.compile tracing to avoid Dynamo compatibility issues
+        if torch.compiler.is_compiling():
+            return
+
         # Skip loss modules - they should not affect forward timing
         if self._is_loss_module(module):
             return
 
         # Note: No lock needed here - these variables are only accessed from the
-        # main training thread. Avoiding RLock makes this Dynamo-compatible.
+        # main training thread.
         self._forward_depth -= 1
         if self._forward_depth == 0:
             if self._forward_start is not None:
