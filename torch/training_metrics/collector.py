@@ -231,26 +231,27 @@ class AutoTrainingMetricsCollector:
         if self._is_loss_module(module):
             return
 
-        with self._lock:
-            self._forward_depth += 1
-            if self._forward_depth == 1:
-                # Start of a new training batch if we've completed a previous one
-                if self._had_optimizer_step:
-                    self._complete_batch()
+        # Note: No lock needed here - these variables are only accessed from the
+        # main training thread. Avoiding RLock makes this Dynamo-compatible.
+        self._forward_depth += 1
+        if self._forward_depth == 1:
+            # Start of a new training batch if we've completed a previous one
+            if self._had_optimizer_step:
+                self._complete_batch()
 
-                # Start new batch timing
-                if not self._in_training_batch:
-                    self._start_batch()
+            # Start new batch timing
+            if not self._in_training_batch:
+                self._start_batch()
 
-                self._forward_start = time.perf_counter()
-                self._had_forward = True
+            self._forward_start = time.perf_counter()
+            self._had_forward = True
 
-                # End data loading timing when forward starts
-                if self._data_loading_start is not None:
-                    self._data_loading_time_ms = (
-                        time.perf_counter() - self._data_loading_start
-                    ) * 1000
-                    self._data_loading_start = None
+            # End data loading timing when forward starts
+            if self._data_loading_start is not None:
+                self._data_loading_time_ms = (
+                    time.perf_counter() - self._data_loading_start
+                ) * 1000
+                self._data_loading_start = None
 
     def _forward_hook(
         self,
@@ -266,15 +267,16 @@ class AutoTrainingMetricsCollector:
         if self._is_loss_module(module):
             return
 
-        with self._lock:
-            self._forward_depth -= 1
-            if self._forward_depth == 0:
-                if self._forward_start is not None:
-                    # Accumulate forward time (for gradient accumulation scenarios)
-                    self._forward_pass_time_ms += (
-                        time.perf_counter() - self._forward_start
-                    ) * 1000
-                    self._forward_start = None
+        # Note: No lock needed here - these variables are only accessed from the
+        # main training thread. Avoiding RLock makes this Dynamo-compatible.
+        self._forward_depth -= 1
+        if self._forward_depth == 0:
+            if self._forward_start is not None:
+                # Accumulate forward time (for gradient accumulation scenarios)
+                self._forward_pass_time_ms += (
+                    time.perf_counter() - self._forward_start
+                ) * 1000
+                self._forward_start = None
 
     def _loss_forward_hook(
         self,
