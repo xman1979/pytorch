@@ -73,7 +73,7 @@ def example_basic_model():
     No special imports, no context managers, no decorators needed!
     """
     print("=" * 60)
-    print("Example 1: ZERO CODE CHANGE (Fully Automatic) with a simple model")
+    print("Example: Basic example with a simple model")
     print("=" * 60)
     print()
     print("This example shows a COMPLETELY UNMODIFIED training loop.")
