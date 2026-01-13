@@ -296,17 +296,20 @@ class AutoTrainingMetricsCollector:
         if not self._enabled:
             return
 
-        with self._lock:
-            # Capture scalar loss value
-            if isinstance(output, torch.Tensor):
-                try:
-                    if output.numel() == 1:
-                        self._last_loss = output.detach().item()
-                except Exception:
-                    pass
+        # Note: No lock needed - this runs synchronously in the main training thread
+        # Capture scalar loss value
+        if isinstance(output, torch.Tensor):
+            try:
+                if output.numel() == 1:
+                    self._last_loss = output.detach().item()
+            except Exception:
+                pass
 
     def _is_loss_module(self, module: torch.nn.Module) -> bool:
         """Check if a module is a loss module."""
+        # Skip tracing to avoid Dynamo compatibility issues with string comparisons
+        if torch.compiler.is_compiling():
+            return False
         class_name = module.__class__.__name__
         # Check explicit list first, then check if name ends with "Loss"
         return class_name in self.LOSS_MODULES or class_name.endswith('Loss')
@@ -329,14 +332,14 @@ class AutoTrainingMetricsCollector:
         if not self._is_loss_module(module):
             return
 
-        with self._lock:
-            # Capture scalar loss value
-            if isinstance(output, torch.Tensor):
-                try:
-                    if output.numel() == 1:
-                        self._last_loss = output.detach().item()
-                except Exception:
-                    pass
+        # Note: No lock needed - this runs synchronously in the main training thread
+        # Capture scalar loss value
+        if isinstance(output, torch.Tensor):
+            try:
+                if output.numel() == 1:
+                    self._last_loss = output.detach().item()
+            except Exception:
+                pass
 
     def _optimizer_pre_hook(
         self, optimizer: torch.optim.Optimizer, args: Tuple[Any, ...], kwargs: dict
@@ -345,8 +348,8 @@ class AutoTrainingMetricsCollector:
         if not self._enabled:
             return None
 
-        with self._lock:
-            self._optimizer_start = time.perf_counter()
+        # Note: No lock needed - this runs synchronously in the main training thread
+        self._optimizer_start = time.perf_counter()
         return None
 
     def _optimizer_post_hook(
@@ -356,14 +359,14 @@ class AutoTrainingMetricsCollector:
         if not self._enabled:
             return
 
-        with self._lock:
-            if self._optimizer_start is not None:
-                self._optimizer_step_time_ms = (
-                    time.perf_counter() - self._optimizer_start
-                ) * 1000
-                self._optimizer_start = None
+        # Note: No lock needed - this runs synchronously in the main training thread
+        if self._optimizer_start is not None:
+            self._optimizer_step_time_ms = (
+                time.perf_counter() - self._optimizer_start
+            ) * 1000
+            self._optimizer_start = None
 
-            self._had_optimizer_step = True
+        self._had_optimizer_step = True
 
     def _start_batch(self) -> None:
         """Start timing a new training batch."""
@@ -431,22 +434,22 @@ class AutoTrainingMetricsCollector:
         if not self._enabled:
             return
 
-        with self._lock:
-            self._backward_start = time.perf_counter()
-            self._had_backward = True
+        # Note: No lock needed - this runs synchronously in the main training thread
+        self._backward_start = time.perf_counter()
+        self._had_backward = True
 
     def end_backward(self) -> None:
         """Called by autograd.backward() to end timing backward pass."""
         if not self._enabled:
             return
 
-        with self._lock:
-            if self._backward_start is not None:
-                # Accumulate backward time (for gradient accumulation scenarios)
-                self._backward_pass_time_ms += (
-                    time.perf_counter() - self._backward_start
-                ) * 1000
-                self._backward_start = None
+        # Note: No lock needed - this runs synchronously in the main training thread
+        if self._backward_start is not None:
+            # Accumulate backward time (for gradient accumulation scenarios)
+            self._backward_pass_time_ms += (
+                time.perf_counter() - self._backward_start
+            ) * 1000
+            self._backward_start = None
 
     def record_data_loading_time(self, time_seconds: float) -> None:
         """
@@ -460,8 +463,9 @@ class AutoTrainingMetricsCollector:
         if not self._enabled:
             return
 
-        with self._lock:
-            self._data_loading_time_ms = time_seconds * 1000
+        # Note: No lock needed - this is called from the main training thread
+        # after DataLoader returns a batch
+        self._data_loading_time_ms = time_seconds * 1000
 
     def on_epoch_end(self) -> None:
         """
@@ -473,12 +477,13 @@ class AutoTrainingMetricsCollector:
         if not self._enabled:
             return
 
-        with self._lock:
-            # Complete any pending batch before epoch ends
-            if self._in_training_batch:
-                self._complete_batch()
+        # Note: No lock needed - this is called from the main training thread
+        # when DataLoader iteration is exhausted
+        # Complete any pending batch before epoch ends
+        if self._in_training_batch:
+            self._complete_batch()
 
-            self._epoch += 1
+        self._epoch += 1
 
     def increment_epoch(self) -> None:
         """Increment the epoch counter. Called when DataLoader restarts."""
@@ -589,12 +594,13 @@ class AutoTrainingMetricsCollector:
         if not self._enabled:
             return
 
-        with self._lock:
-            self._data_preprocessing_time_ms = time_seconds * 1000
+        # Note: No lock needed - collate_fn result is consumed in the main
+        # training thread, so this is called from the main thread
+        self._data_preprocessing_time_ms = time_seconds * 1000
 
-            # Record the metric if OTel is available
-            if self._meter is not None and "data_preprocessing_time" in self._gauges:
-                self._gauges["data_preprocessing_time"].set(self._data_preprocessing_time_ms)
+        # Record the metric if OTel is available
+        if self._meter is not None and "data_preprocessing_time" in self._gauges:
+            self._gauges["data_preprocessing_time"].set(self._data_preprocessing_time_ms)
 
     def _hook_loss_module(self, module: torch.nn.Module) -> None:
         """Hook a loss module to capture its output."""
